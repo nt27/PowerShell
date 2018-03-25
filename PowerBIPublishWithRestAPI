@@ -1,0 +1,188 @@
+#*********************************************************************************************
+#Project Name	:	Reports Publishing 
+#Purpose		  :	To Publish the Power BI Report files (.PBIX) to Power BI Report Server
+#Author			  : 	Navaneethakrishnan Thangaraj
+#Created on		: 	25 March 2018
+#*********************************************************************************************
+Function WriteOnHost ([string]$Message)
+{
+	$TimeStamp = Get-Date -Format "dd-MM-yyyy HH:mm:ss"
+	Write-Host  $TimeStamp" ::> $Message" 
+}
+Function PostRequest(
+[string]$Name,
+[string]$Type,
+[string]$Path,
+[string]$ContentFullPath,
+[string]$PostUrl)
+{
+    $Content = ""
+   if($ContentFullPath.Length -ne 0) 
+   {    
+        $ReportContentInBytes = [System.IO.File]::ReadAllBytes($ContentFullPath) 
+        $Content = [System.Convert]::ToBase64String($ReportContentInBytes)
+   }
+
+    $PostContent = @{
+    "Name" = "$Name";
+    "@odata.type" = "#Model.$Type";
+    "Content" = $Content;
+    "ContentType"="";
+    "Path" = "$Path";
+    } | ConvertTo-Json
+
+    try {
+        $response = Invoke-WebRequest -Uri $PostUrl -Method Post -Body $PostContent -UseDefaultCredentials -ContentType "application/json" -ErrorAction:Stop
+    }
+    catch{
+        Write-Host $_.Exception.Message -BackgroundColor Red
+        Write-Host "Path::$Path  Name:$Name"
+        $Check = $Error[0]
+    }
+}
+
+Function PutRequest(
+[string]$Name,
+[string]$Type,
+[string]$Path,
+[string]$ContentFullPath,
+[string]$PutUrl,
+[string]$ObjectID)
+{
+    $PutUrl = $PutUrl + "($ObjectID)"
+    #write-host $PutUrl
+    $Content = ""
+   if($ContentFullPath.Length -ne 0) 
+   {    
+        $ReportContentInBytes = [System.IO.File]::ReadAllBytes($ContentFullPath) 
+        $Content = [System.Convert]::ToBase64String($ReportContentInBytes)
+   }
+
+    $PostContent = @{
+    "Name" = "$Name";
+    "@odata.type" = "#Model.$Type";
+    "Content" = $Content;
+    "ContentType"="";
+    "Path" = "$Path";
+    } | ConvertTo-Json
+
+    try {
+        $response = Invoke-WebRequest -Uri $PutUrl -Method PUT -Body $PostContent -UseDefaultCredentials -ContentType "application/json" -ErrorAction:Stop
+    }
+    catch{
+        Write-Host $_.Exception.Message -BackgroundColor Red
+        $Check = $Error[0]
+    }
+}
+
+Function CheckingFolderReport(
+[string]$Name,
+[string]$Path,
+[string]$GetUrl)
+{
+    $GetUrl = $GetUrl + "(Path='$Path/$Name')"
+       
+    try {
+        $response = Invoke-WebRequest -Uri $GetUrl -Method GET -UseDefaultCredentials -ContentType "application/json" -ErrorAction:Stop
+        If($response.BaseResponse.StatusCode -eq "OK")
+        {
+            $ObjectId = ($response.content | ConvertFrom-Json).Id
+            Return $ObjectId
+        }
+    }
+    catch{
+        Return "0"
+        #$response
+        #Write-Host $_.Exception.Message -BackgroundColor Red
+    }
+}
+
+
+
+$ReportPortalUri = "http://<<ServerName>>/<<PBIReport URL>>"
+$ReportsSourcePath = "<<Local Path>>"
+$ReportUploadRootPath ="/"
+
+$PostUrl = $ReportPortalUri + "/api/v2.0/CatalogItems/"
+$GetPutUrl = $ReportPortalUri + "/api/v2.0/CatalogItems"
+
+WriteOnHost "Power BI Reports Uploading Started....."
+    
+$DirInfo = Get-ChildItem $ReportsSourcePath -Filter *.PBIX -Recurse
+$TotalReport = $DirInfo.Count
+WriteOnHost "Total Reports to upload:$TotalReport"
+$ReportNumber=0
+foreach($Files in $DirInfo)
+{
+    $ReportNumber++
+    $ReportCurrentDirectory = $ReportDirectory.Split("\")
+    $ReportCurrentDirectoryName = $ReportCurrentDirectory[$ReportCurrentDirectory.Length-1]
+    $ReportUploadPath = $ReportUploadRootPath + $ReportCurrentDirectoryName
+    #Write-Host $ReportCurrentDirectoryName $ReportName $ReportUploadPath
+	
+
+
+    $ReportName = [IO.Path]::GetFileNameWithoutExtension($Files.FullName)
+    $ReportDirectory = [IO.Path]::GetDirectoryName($Files.FullName)
+  
+
+    $ReportPathMinusRootFolder = $ReportDirectory -replace [regex]::Escape($ReportsSourcePath),""
+    #$ReportPathMinusRootFolder = $ReportPathMinusRootFolder -replace [regex]::Escape('/'),""
+    #Write-Host "ReportPathMinusRootFolder::$ReportPathMinusRootFolder"
+    #Exit
+    $ReportRootDirectory  = $ReportPathMinusRootFolder.Split("\")
+    $ReportCurrentDirectoryName = $ReportRootDirectory[$ReportRootDirectory.Length-1]
+    if($ReportPathMinusRootFolder -eq $ReportDirectory)
+    {    
+        $ReportUploadPath = $ReportUploadRootPath
+    }
+    else
+    {
+        $ReportUploadRootPath ="/"
+        For($i=0; $i-lt $ReportRootDirectory.Length-1; $i++)
+        {
+            If($i-eq $ReportRootDirectory.Length-1) { $ReportCurrentDirectoryName = $ReportRootDirectory[$i] }
+            else 
+            {
+             $ReportUploadRootPath += $ReportRootDirectory[$i] +  "/"
+            }
+        }if($ReportUploadRootPath.Length -gt 1)
+        {
+            if($ReportUploadRootPath.Substring($ReportUploadRootPath.Length-1) -eq "/") 
+            {$ReportUploadRootPath = $ReportUploadRootPath.Substring(0,$ReportUploadRootPath.Length-1)
+            }
+        }
+        #$ReportUploadPath = $ReportUploadRootPath #+ $ReportCurrentDirectoryName
+    }
+
+    #WriteOnHost "Checking Directory::$ReportCurrentDirectoryName"
+    $Result = CheckingFolderReport -Name $ReportCurrentDirectoryName -Path $ReportUploadRootPath -GetUrl $GetPutUrl
+    If($Result -eq "0")
+    {
+        #WriteOnHost "Creating Directory::$ReportCurrentDirectoryName"
+        PostRequest -Name $ReportCurrentDirectoryName -Type "Folder" -Path $ReportUploadRootPath -ContentFullPath "" -PostUrl $PostUrl
+    }
+     If($ReportUploadRootPath.Length -eq 1 ) 
+     {
+        $ReportUploadRootPath = $ReportUploadRootPath + $ReportCurrentDirectoryName
+     }
+     else
+     { 
+        $ReportUploadRootPath = $ReportUploadRootPath + "/" + $ReportCurrentDirectoryName
+     }
+	#WriteOnHost "Checking Report::$ReportName"
+    $ReportCheckingResult = CheckingFolderReport -Name $ReportName -Path $ReportUploadRootPath -GetUrl $GetPutUrl
+    If($ReportCheckingResult -eq "0")
+    {
+        #WriteOnHost "Creating new Report::$ReportName"
+       
+        PostRequest -Name $ReportName -Type "PowerBIReport" -Path $ReportUploadRootPath  -ContentFullPath $Files.FullName -PostUrl $PostUrl    
+    }
+    else
+    {
+        #WriteOnHost "Updating the existing Report::$ReportName" 
+        PutRequest -Name $ReportName -Type "PowerBIReport" -Path $ReportUploadRootPath -ContentFullPath $Files.FullName -PutUrl $GetPutUrl -ObjectID $ReportCheckingResult  
+    }
+    WriteOnHost "Uploading Report $ReportNumber of $TotalReport  ==>Report::$ReportName"
+}
+WriteOnHost "Power BI Reports Uploading completed....."
